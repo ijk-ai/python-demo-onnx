@@ -49,6 +49,7 @@ def make_export(folder, mode):
 class FakeSession:
     def __init__(self, *args, **kwargs):
         self.last_input = None
+        self.options = kwargs["sess_options"]
 
     def run(self, names, inputs):
         self.last_input = inputs["images"]
@@ -58,6 +59,14 @@ class FakeSession:
             np.array([[[-1, 0], [1, -1]]], dtype=np.int64),
             np.array([[0.7, 0.9]], dtype=np.float32),
         ]
+
+
+def fake_runtime():
+    return types.SimpleNamespace(
+        InferenceSession=FakeSession,
+        SessionOptions=types.SimpleNamespace,
+        GraphOptimizationLevel=types.SimpleNamespace(ORT_DISABLE_ALL="disabled"),
+    )
 
 
 class DemoTests(unittest.TestCase):
@@ -73,9 +82,10 @@ class DemoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             make_export(folder, "classification")
-            fake_ort = types.SimpleNamespace(InferenceSession=FakeSession)
+            fake_ort = fake_runtime()
             with patch.dict(sys.modules, {"onnxruntime": fake_ort}):
                 model = demo.Model(folder / "manifest.json")
+            self.assertEqual(model.session.options.graph_optimization_level, "disabled")
             crop, prediction = model.predict(Image.new("RGB", (6, 4), "red"))
             self.assertEqual(crop.size, (4, 4))
             self.assertEqual(demo.describe(prediction, model.labels), "red: 80.0%, blue: 20.0%")
@@ -91,9 +101,7 @@ class DemoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             make_export(folder, "segmentation")
-            with patch.dict(
-                sys.modules, {"onnxruntime": types.SimpleNamespace(InferenceSession=FakeSession)}
-            ):
+            with patch.dict(sys.modules, {"onnxruntime": fake_runtime()}):
                 model = demo.Model(folder)
             crop, prediction = model.predict(Image.new("RGB", (6, 4), "white"))
             np.testing.assert_array_equal(prediction["mask"], [[-1, 0], [1, -1]])
@@ -217,6 +225,59 @@ class DemoTests(unittest.TestCase):
         self.assertGreaterEqual(camera.count, 3)
         self.assertTrue(camera.released)
         self.assertFalse(prediction_timed_out)
+
+    def test_webcam_default_samples_the_fifth_frame(self):
+        analyzed = []
+
+        class Camera:
+            count = 0
+
+            def isOpened(self):
+                return True
+
+            def read(self):
+                self.count += 1
+                return True, np.full((8, 8, 3), self.count, dtype=np.uint8)
+
+            def release(self):
+                pass
+
+        class Model:
+            config = CONFIG
+            labels = ("red", "blue")
+
+            def __init__(self, path):
+                pass
+
+            def predict(self, image):
+                analyzed.append(int(np.asarray(image)[0, 0, 0]))
+                crop = demo.prepare_image(image, self.config)[1]
+                return crop, {"mode": "classification", "scores": np.array([0.8, 0.2])}
+
+        camera = Camera()
+        fake_cv2 = types.SimpleNamespace(
+            VideoCapture=lambda index: camera,
+            COLOR_BGR2RGB=1,
+            COLOR_RGB2BGR=2,
+            FONT_HERSHEY_SIMPLEX=0,
+            WND_PROP_VISIBLE=0,
+            error=RuntimeError,
+            cvtColor=lambda frame, code: frame,
+            putText=lambda *args: None,
+            imshow=lambda *args: None,
+            waitKey=lambda *args: 0,
+            getWindowProperty=lambda *args: 0 if camera.count >= 6 else 1,
+            destroyAllWindows=lambda: None,
+        )
+        with patch.dict(sys.modules, {"demo": demo, "cv2": fake_cv2}):
+            webcam_spec = importlib.util.spec_from_file_location(
+                "ijk_onnx_webcam_fifth", ROOT / "webcam.py"
+            )
+            webcam = importlib.util.module_from_spec(webcam_spec)
+            webcam_spec.loader.exec_module(webcam)
+        with patch.object(webcam, "Model", Model):
+            webcam.main(["unused-export"])
+        self.assertEqual(analyzed, [5])
 
 
 if __name__ == "__main__":

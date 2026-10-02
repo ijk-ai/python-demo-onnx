@@ -57,7 +57,7 @@ def main(argv=None):
                     last_prediction = np.asarray(annotate(analyzed_crop, prediction, model.labels))
                     last_frame = pending_frame
                     pending = None
-                if (count - 1) % args.every == 0 and pending is None:
+                if count % args.every == 0 and pending is None:
                     pending_frame = count
                     pending = worker.submit(model.predict, image.copy())
                 shown = last_prediction.copy() if last_prediction is not None else live.copy()

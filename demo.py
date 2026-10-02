@@ -123,7 +123,11 @@ class Model:
         os.environ["ORT_DISABLE_TELEMETRY"] = "1"
         import onnxruntime as ort
 
-        self.session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        self.session = ort.InferenceSession(
+            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
 
     def predict(self, image):
         tensor, crop = prepare_image(image, self.config)
